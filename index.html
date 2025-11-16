@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Refference finder</title>
+  <style>
+    :root { --bg:#0b1220; --panel:#121a2b; --muted:#94a3b8; --text:#e6edf6; --brand:#60a5fa; --accent:#34d399; --warn:#f59e0b; --danger:#ef4444; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial; background:var(--bg); color:var(--text)}
+    header{padding:20px 16px;border-bottom:1px solid #1f2937;background:linear-gradient(180deg,#0c1424,#0a1020)}
+    h1{margin:0;font-size:22px;letter-spacing:.3px}
+    main{max-width:1100px;margin:24px auto;padding:0 16px}
+    .card{background:var(--panel); border:1px solid #1f2937; border-radius:16px; padding:16px}
+    label{display:block; font-size:13px; color:var(--muted); margin-bottom:8px}
+    textarea{width:100%; min-height:260px; background:#0a1324; color:var(--text); border:1px solid #243145; border-radius:12px; padding:12px; resize:vertical; line-height:1.45}
+    input[type="text"]{width:100%; background:#0a1324; color:var(--text); border:1px solid #243145; border-radius:12px; padding:10px}
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    button{appearance:none; border:1px solid transparent; background:var(--brand); color:#06121f; padding:10px 14px; border-radius:12px; font-weight:600; cursor:pointer}
+    button.secondary{background:transparent; color:var(--text); border-color:#2a3a54}
+    .hint{font-size:12px; color:var(--muted)}
+    .tbl{width:100%; border-collapse:separate; border-spacing:0 10px}
+    .tbl th{font-size:12px; font-weight:600; color:#91a2bd; text-align:left; padding:0 10px}
+    .tbl td{vertical-align:top; background:#0a1324; border:1px solid #243145; padding:10px; border-radius:10px}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px}
+    .links a{display:inline-block; margin-right:8px; text-decoration:none; color:#c6e1ff}
+    .status{font-size:12px}
+    .ok{color:var(--accent)}
+    .warn{color:var(--warn)}
+    .err{color:var(--danger)}
+    .progress{height:10px; background:#0b1b2f; border:1px solid #22324a; border-radius:999px; overflow:hidden}
+    .bar{height:100%; width:0%; background:linear-gradient(90deg, var(--brand), #7dd3fc); transition:width .25s ease}
+
+    /* Modal */
+    .modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:50}
+    .modal{width:min(900px,92vw); background:#0a1324; border:1px solid #243145; border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,.4); overflow:hidden}
+    .modal header{display:flex; align-items:center; justify-content:space-between; padding:14px 16px; background:#0b162a; border-bottom:1px solid #1e2a40}
+    .modal h2{margin:0; font-size:16px}
+    .modal .content{padding:12px 16px}
+    .modal textarea{min-height:320px}
+    .modal .actions{display:flex; gap:10px; justify-content:flex-end; padding:12px 16px; border-top:1px solid #1e2a40; background:#0b162a}
+
+    /* Diagnostics */
+    details{margin-top:12px}
+    pre{background:#0a1324; border:1px solid #243145; border-radius:10px; padding:10px; overflow:auto}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>References → DOI finder → Open‑Access PDF (where legal) | Export to BibTeX</h1>
+    <p class="hint" style="margin-top:6px">Paste APA/(Other) references below. This tool queries Crossref for a DOI and then checks Unpaywall for a legal OA PDF. It also provides a Google Scholar link and supports BibTeX export.</p>
+  </header>
+
+  <main class="card">
+    <label for="refs">Paste APA references (one per line or separated by blank lines)</label>
+    <textarea id="refs" placeholder="Lastname, A. A., & Lastname, B. B. (2024). Title of the article. Journal Name, 12(3), 123–145."></textarea>
+
+    <div style="height:8px"></div>
+    <label for="delay">Request delay between items (ms)</label>
+    <input type="text" id="delay" value="300" />
+    <div class="hint">Small delays reduce throttling. Set to 0 if you prefer no delay.</div>
+
+    <div style="height:14px"></div>
+    <div class="row">
+      <button id="go">Process</button>
+      <button id="clear" class="secondary">Clear results</button>
+      <button id="examples" class="secondary" title="Load example APA references for testing">Load examples</button>
+      <button id="selftest" class="secondary" title="Run basic self-tests">Run self‑test</button>
+      <button id="bibtex" class="secondary" title="Export all found items as BibTeX">Export BibTeX</button>
+    </div>
+
+    <div style="height:14px"></div>
+    <div class="progress" aria-hidden="true"><div id="bar" class="bar"></div></div>
+    <div class="row" style="justify-content:space-between; margin-top:6px">
+      <div class="hint"><span id="counter">0 / 0</span> processed</div>
+      <div class="hint">APIs used: Crossref /works, Unpaywall</div>
+    </div>
+
+    <div style="height:12px"></div>
+    <table class="tbl" id="table">
+      <thead>
+        <tr>
+          <th>Reference</th>
+          <th>Match</th>
+          <th>Links</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+
+    <details>
+      <summary class="hint">Diagnostics (self‑test output)</summary>
+      <pre id="diag"></pre>
+    </details>
+  </main>
+
+  <!-- BibTeX Modal -->
+  <div class="modal-backdrop" id="modalBackdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <header>
+        <h2 id="modalTitle">BibTeX Export</h2>
+        <button id="closeModal" class="secondary" aria-label="Close">Close</button>
+      </header>
+      <div class="content">
+        <label class="hint" for="bibtexOut">Copy these entries into your .bib file</label>
+        <textarea id="bibtexOut" class="mono"></textarea>
+      </div>
+      <div class="actions">
+        <button id="copyBib">Copy to clipboard</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const qs = s => document.querySelector(s);
+    const tbody = qs('#tbody');
+    const bar = qs('#bar');
+    const counter = qs('#counter');
+    const diag = qs('#diag');
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    const appState = {
+      results: [] // { ref, item } where item is Crossref message.items[0]
+    };
+
+    function parseReferences(raw){
+      const blocks = raw.split(/\n\s*\n|\r\n\s*\r\n/).map(s=>s.trim()).filter(Boolean);
+      if(blocks.length > 1) return blocks; // blank-line separated
+      return raw.split(/\n|\r\n/).map(s=>s.trim()).filter(Boolean); // line separated
+    }
+
+    function scholarLink(q){
+      const url = 'https://scholar.google.com/scholar?q=' + encodeURIComponent(q);
+      return `<a href="${url}" target="_blank" rel="noopener">Scholar</a>`;
+    }
+
+    async function crossrefQuery(bib){
+      const fields = [
+        'DOI','title','author','issued','container-title','URL','volume','issue','page','publisher'
+      ].join(',');
+      const headers = { 'Accept': 'application/json' };
+      const mailto = 'mailto=' + encodeURIComponent('contact@example.com'); // polite Crossref usage
+      const base = 'https://api.crossref.org/works?rows=1&' + mailto + '&query.bibliographic=' + encodeURIComponent(bib);
+
+      // Attempt 1: full query (may 400 if filters unsupported for some records)
+      let url = base + '&select=' + fields + '&type=journal-article';
+      let r = await fetch(url, { headers });
+
+      // Attempt 2: drop type filter if not OK
+      if(!r.ok){
+        url = base + '&select=' + fields;
+        r = await fetch(url, { headers });
+      }
+      // Attempt 3: drop select if still not OK
+      if(!r.ok){
+        url = base;
+        r = await fetch(url, { headers });
+      }
+      // Attempt 4: fall back to generic `query=` search
+      if(!r.ok){
+        url = 'https://api.crossref.org/works?rows=1&' + mailto + '&query=' + encodeURIComponent(bib);
+        r = await fetch(url, { headers });
+      }
+
+      if(!r.ok){
+        throw new Error('Crossref request failed with status ' + r.status);
+      }
+      return r.json();
+    }
+
+    async function unpaywall(doi){
+      // Use a hardcoded polite email as recommended by Unpaywall docs
+      const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent('oa@example.com')}`;
+      const r = await fetch(url);
+      return r.json();
+    }
+
+    function escapeHtml(s){
+      return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+    }
+
+    function addRow(ref){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><div class="mono">${escapeHtml(ref.slice(0,400))}${ref.length>400?'…':''}</div></td>
+        <td class="match mono" style="min-width:260px">—</td>
+        <td class="links">${scholarLink(ref)}</td>
+        <td class="status">Queued</td>`;
+      tbody.appendChild(tr);
+      return tr;
+    }
+
+    function setStatus(tr, text, cls){
+      const td = tr.querySelector('.status');
+      td.textContent = text;
+      td.className = 'status ' + (cls || '');
+    }
+
+    function setMatch(tr, html){
+      tr.querySelector('.match').innerHTML = html;
+    }
+
+    function addLink(tr, label, href){
+      const links = tr.querySelector('.links');
+      const a = document.createElement('a');
+      a.href = href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = label;
+      links.appendChild(a);
+    }
+
+    function keepResult(ref, item){
+      const idx = appState.results.findIndex(r => r.ref === ref);
+      if(idx >= 0) appState.results[idx] = {ref, item};
+      else appState.results.push({ref, item});
+    }
+
+    async function processOne(tr, ref){
+      try{
+        setStatus(tr, 'Crossref…');
+        const x = await crossrefQuery(ref);
+        const item = x?.message?.items?.[0];
+        if(!item){ setStatus(tr, 'No Crossref match', 'warn'); keepResult(ref, null); return; }
+        const doi = item.DOI;
+        const title = (item.title && item.title[0]) || '';
+        const journal = (item['container-title'] && item['container-title'][0]) || '';
+        const year = item.issued?.['date-parts']?.[0]?.[0] || '';
+        const summary = `${escapeHtml(title)}${journal? ' — <em>'+escapeHtml(journal)+'</em>':''}${year? ' ('+year+')':''}<br><span class="mono">DOI: ${escapeHtml(doi||'')}</span>`;
+        setMatch(tr, summary);
+        keepResult(ref, item);
+        if(item.URL) addLink(tr,'Publisher', item.URL);
+        if(doi) addLink(tr,'DOI.org', 'https://doi.org/' + encodeURIComponent(doi));
+
+        if(!doi){ setStatus(tr, 'No DOI', 'warn'); return; }
+
+        setStatus(tr, 'Unpaywall…');
+        let oaUrl = null;
+        try{
+          const u = await unpaywall(doi);
+          const loc = u?.best_oa_location || (u?.oa_locations && u.oa_locations[0]);
+          oaUrl = loc && (loc.url_for_pdf || loc.url);
+        }catch(_e){ /* ignore */ }
+
+        if(oaUrl){ addLink(tr, 'OA PDF', oaUrl); setStatus(tr, 'Open‑access PDF', 'ok'); }
+        else { setStatus(tr, 'No OA PDF', 'warn'); }
+      }catch(err){ setStatus(tr, 'Error', 'err'); keepResult(ref, null); }
+    }
+
+    async function processAll(){
+      tbody.innerHTML = '';
+      appState.results = [];
+      const refs = parseReferences(qs('#refs').value);
+      const delay = Math.max(0, parseInt(qs('#delay').value,10) || 0);
+      const total = refs.length;
+      counter.textContent = `0 / ${total}`;
+      bar.style.width = '0%';
+      if(!total){ alert('Please paste at least one reference.'); return; }
+
+      refs.forEach(r => addRow(r));
+
+      let done = 0;
+      for(let i=0;i<refs.length;i++){
+        const tr = tbody.children[i];
+        await processOne(tr, refs[i]);
+        done++;
+        counter.textContent = `${done} / ${total}`;
+        bar.style.width = `${Math.round(done/total*100)}%`;
+        if(delay) await sleep(delay);
+      }
+    }
+
+    // ---------- BibTeX helpers ----------
+    function sanitizeKey(s){
+      return s.toLowerCase().replace(/[^a-z0-9]+/g,'').slice(0,24);
+    }
+    function firstNonEmpty(arr){ return (arr||[]).find(Boolean) || ''; }
+
+    function bibtexKeyFromItem(item){
+      const authors = item?.author || [];
+      const last = authors[0]?.family || 'anon';
+      const year = item?.issued?.['date-parts']?.[0]?.[0] || 'n.d.';
+      const title = (item?.title && item.title[0]) || '';
+      const titleWord = sanitizeKey(title).slice(0,8) || 'title';
+      return `${sanitizeKey(last)}${year}${titleWord}`;
+    }
+
+    function bibtexAuthors(authors){
+      if(!authors || !authors.length) return '';
+      return authors.map(a => {
+        const family = a.family || '';
+        const given = a.given || '';
+        if(family && given) return `${family}, ${given}`;
+        return family || given;
+      }).join(' and ');
+    }
+
+    function toBibTeX(item){
+      if(!item) return null;
+      const key = bibtexKeyFromItem(item);
+      const title = firstNonEmpty(item.title);
+      const journal = firstNonEmpty(item['container-title']);
+      const year = item.issued?.['date-parts']?.[0]?.[0];
+      const volume = item.volume;
+      const number = item.issue;
+      const pages = item.page;
+      const doi = item.DOI;
+      const publisher = item.publisher;
+      const authors = bibtexAuthors(item.author);
+
+      const lines = [
+        `@article{${key},`,
+        authors? `  author = {${authors}},` : null,
+        title? `  title = {${title}},` : null,
+        journal? `  journal = {${journal}},` : null,
+        year? `  year = {${year}},` : null,
+        volume? `  volume = {${volume}},` : null,
+        number? `  number = {${number}},` : null,
+        pages? `  pages = {${pages}},` : null,
+        doi? `  doi = {${doi}},` : null,
+        publisher? `  publisher = {${publisher}},` : null,
+        `}`
+      ].filter(Boolean);
+      return lines.join('\n');
+    }
+
+    function openModalWith(text){
+      const mb = qs('#modalBackdrop');
+      const out = qs('#bibtexOut');
+      out.value = text || '';
+      mb.style.display = 'flex';
+      out.focus();
+      out.select();
+    }
+
+    function closeModal(){ qs('#modalBackdrop').style.display = 'none'; }
+
+    async function generateBibTeX(){
+      // If no results yet, try to fetch minimally based on current refs
+      let refs = parseReferences(qs('#refs').value);
+      if(!refs.length){ alert('Please paste at least one reference.'); return; }
+
+      // Determine if we need to fetch anything new
+      const knownRefs = new Set(appState.results.map(r => r.ref));
+      const todo = refs.filter(r => !knownRefs.has(r));
+      // Fetch minimal for missing ones (no UI updates)
+      for(let i=0;i<todo.length;i++){
+        try{
+          const x = await crossrefQuery(todo[i]);
+          const item = x?.message?.items?.[0] || null;
+          appState.results.push({ref: todo[i], item});
+        }catch(_e){ appState.results.push({ref: todo[i], item:null}); }
+      }
+
+      // Now assemble BibTeX from all refs in the original order
+      const entries = refs.map(r => {
+        const rec = appState.results.find(x => x.ref === r);
+        const bib = toBibTeX(rec?.item);
+        return bib || `% Could not find Crossref match for: ${r}`;
+      });
+      openModalWith(entries.join('\n\n'));
+    }
+
+    // ---------- Diagnostics / Self‑tests ----------
+    function line(msg){ diag.textContent += msg + '\n'; }
+    function clearDiag(){ diag.textContent = ''; }
+
+    async function runSelfTest(){
+      clearDiag();
+      line('Self‑test starting…');
+      // Test parseReferences
+      const sample = 'One\n\nTwo\nThree';
+      const parsed = parseReferences(sample);
+      line('parseReferences count = ' + parsed.length + ' (expected 2)');
+
+      // Test BibTeX formatting with a mocked Crossref item
+      const mockItem = {
+        DOI:'10.1000/xyz123',
+        title:['A Sample Title'],
+        author:[{family:'Doe', given:'Jane'}, {family:'Smith', given:'John'}],
+        issued:{'date-parts':[[2020]]},
+        'container-title':['Journal of Samples'],
+        volume:'12', issue:'3', page:'45-67', publisher:'Sample Press'
+      };
+      const bib = toBibTeX(mockItem);
+      line(bib.includes('@article{') ? 'BibTeX header OK' : 'BibTeX header MISSING');
+      line(bib.includes('author = {Doe, Jane and Smith, John}') ? 'Authors OK' : 'Authors BAD');
+      line(bib.includes('doi = {10.1000/xyz123}') ? 'DOI OK' : 'DOI BAD');
+
+      line('Self‑test finished. Check above for PASS/FAIL hints.');
+    }
+
+    // ---------- Wire up UI ----------
+    qs('#go').addEventListener('click', processAll);
+    qs('#clear').addEventListener('click', ()=>{ tbody.innerHTML=''; counter.textContent='0 / 0'; bar.style.width='0%'; appState.results = []; });
+    qs('#bibtex').addEventListener('click', generateBibTeX);
+    qs('#examples').addEventListener('click', ()=>{
+      const examples = [
+        // User‑reported 400 case (journal article)
+        'Wilson, B., & Russell, E. J. (2022). Training, tools, and resources to support emergency decision-making by park rangers. Journal of Security, Intelligence, and Resilience Education, 13(1).',
+        // Classic, has DOI
+        'Endsley, M. R. (1995). Toward a theory of situation awareness in dynamic systems. Human Factors, 37(1), 32–64.',
+        // Another common DOI case
+        'Klein, G. (2008). Naturalistic decision making. Human Factors, 50(3), 456–460.',
+        // Likely book / chapter style to exercise fallbacks
+        'Feltovich, P. J., Spiro, R. J., & Coulson, R. L. (2006). Learning and transfer in complex domains. In J. M. Spector (Ed.), The Cambridge handbook of the learning sciences (pp. 1–20). Cambridge University Press.'
+      ].join('\n');
+      qs('#refs').value = examples;
+    });
+    qs('#selftest').addEventListener('click', runSelfTest);
+
+    qs('#closeModal').addEventListener('click', closeModal);
+    qs('#modalBackdrop').addEventListener('click', (e)=>{ if(e.target === e.currentTarget) closeModal(); });
+    qs('#copyBib').addEventListener('click', async ()=>{
+      try{
+        const text = qs('#bibtexOut').value;
+        await navigator.clipboard.writeText(text);
+        alert('Copied to clipboard');
+      }catch(_e){
+        qs('#bibtexOut').select();
+        document.execCommand('copy');
+        alert('Copied');
+      }
+    });
+  </script>
+</body>
+</html>
