@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Refference finder</title>
+  <title>BibMagic</title>
   <style>
     :root { --bg:#0b1220; --panel:#121a2b; --muted:#94a3b8; --text:#e6edf6; --brand:#60a5fa; --accent:#34d399; --warn:#f59e0b; --danger:#ef4444; }
     *{box-sizing:border-box}
     body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial; background:var(--bg); color:var(--text)}
-    header{padding:20px 16px;border-bottom:1px solid #1f2937;background:linear-gradient(180deg,#0c1424,#0a1020)}
-    h1{margin:0;font-size:22px;letter-spacing:.3px}
+    header{padding:24px 16px 20px;border-bottom:1px solid #1f2937;background:linear-gradient(180deg,#0c1424,#0a1020)}
+    h1{margin:0;font-size:36px;font-weight:800;letter-spacing:-.5px;background:linear-gradient(90deg,#60a5fa,#7dd3fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .site-desc{margin:6px 0 0;font-size:13px;color:var(--muted);max-width:680px;line-height:1.5}
     main{max-width:1100px;margin:24px auto;padding:0 16px}
     .card{background:var(--panel); border:1px solid #1f2937; border-radius:16px; padding:16px}
     label{display:block; font-size:13px; color:var(--muted); margin-bottom:8px}
@@ -28,6 +29,12 @@
     .ok{color:var(--accent)}
     .warn{color:var(--warn)}
     .err{color:var(--danger)}
+    .flags{margin-top:8px;display:flex;flex-direction:column;gap:3px}
+    .flag{font-size:11px;display:flex;align-items:flex-start;gap:5px;line-height:1.4;padding:3px 7px;border-radius:6px}
+    .flag.err{background:rgba(239,68,68,.13);color:#fca5a5}
+    .flag.warn{background:rgba(245,158,11,.12);color:#fcd34d}
+    .flag-icon{font-style:normal;flex-shrink:0}
+    tr.row-flagged td{border-color:#5a2020}
     .progress{height:10px; background:#0b1b2f; border:1px solid #22324a; border-radius:999px; overflow:hidden}
     .bar{height:100%; width:0%; background:linear-gradient(90deg, var(--brand), #7dd3fc); transition:width .25s ease}
 
@@ -47,8 +54,8 @@
 </head>
 <body>
   <header>
-    <h1>References → DOI finder → Open‑Access PDF (where legal) | Export to BibTeX</h1>
-    <p class="hint" style="margin-top:6px">Paste APA/(Other) references below. This tool queries Crossref for a DOI and then checks Unpaywall for a legal OA PDF. It also provides a Google Scholar link and supports BibTeX export.</p>
+    <h1>BibMagic</h1>
+    <p class="site-desc">Paste APA or other references to resolve DOIs via Crossref, find legal open-access PDFs via Unpaywall, get Google Scholar links, and export clean BibTeX entries.</p>
   </header>
 
   <main class="card">
@@ -173,6 +180,7 @@
       // Use a hardcoded polite email as recommended by Unpaywall docs
       const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent('oa@example.com')}`;
       const r = await fetch(url);
+      if(!r.ok) throw new Error('Unpaywall request failed with status ' + r.status);
       return r.json();
     }
 
@@ -201,10 +209,17 @@
       tr.querySelector('.match').innerHTML = html;
     }
 
+    function safeUrl(href){
+      try { const u = new URL(href); return (u.protocol === 'https:' || u.protocol === 'http:') ? href : null; }
+      catch(_e) { return null; }
+    }
+
     function addLink(tr, label, href){
+      const safe = safeUrl(href);
+      if(!safe) return;
       const links = tr.querySelector('.links');
       const a = document.createElement('a');
-      a.href = href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = label;
+      a.href = safe; a.target = '_blank'; a.rel = 'noopener'; a.textContent = label;
       links.appendChild(a);
     }
 
@@ -212,6 +227,95 @@
       const idx = appState.results.findIndex(r => r.ref === ref);
       if(idx >= 0) appState.results[idx] = {ref, item};
       else appState.results.push({ref, item});
+    }
+
+    // ---------- Reference validation ----------
+    function extractYear(ref){
+      const m = ref.match(/\((\d{4})[a-z]?\)/);
+      return m ? parseInt(m[1]) : null;
+    }
+
+    function extractFirstAuthor(ref){
+      // APA: "Lastname, F." at the start
+      const m = ref.match(/^([\w\u00C0-\u024F'\-]{2,}),\s/);
+      return m ? m[1].toLowerCase().replace(/[^a-z\u00C0-\u024F]/g,'') : null;
+    }
+
+    function extractTitle(ref){
+      // After (YEAR). and before the next ". Capital" boundary (journal)
+      const m = ref.match(/\(\d{4}[a-z]?\)[^.]*\.\s+(.+?)\.\s+[A-Z]/);
+      return m ? m[1].trim() : null;
+    }
+
+    function tokenize(s){
+      const stop = new Set(['a','an','the','of','in','on','at','to','for','and','or','with','by','from','is','are','was','its','this','that']);
+      return s.toLowerCase().split(/\W+/).filter(w => w.length > 2 && !stop.has(w));
+    }
+
+    function wordOverlap(a, b){
+      const ta = tokenize(a);
+      const tb = new Set(tokenize(b));
+      if(!ta.length || !tb.size) return 0;
+      const shared = ta.filter(w => tb.has(w)).length;
+      return shared / Math.max(ta.length, tb.size);
+    }
+
+    function validateReference(ref, item){
+      const flags = [];
+
+      // Low Crossref match confidence
+      const score = item.score;
+      if(typeof score === 'number' && score < 40){
+        flags.push({level:'err', msg:`Low Crossref match confidence (score: ${Math.round(score)}) — this may be a hallucinated reference`});
+      }
+
+      // Year check
+      const refYear = extractYear(ref);
+      const itemYear = item.issued?.['date-parts']?.[0]?.[0];
+      if(refYear && itemYear && refYear !== itemYear){
+        flags.push({level:'err', msg:`Year mismatch: reference says ${refYear}, Crossref record shows ${itemYear}`});
+      }
+
+      // First author check
+      const refAuthor = extractFirstAuthor(ref);
+      const itemAuthorRaw = item.author?.[0]?.family || '';
+      const itemAuthor = itemAuthorRaw.toLowerCase().replace(/[^a-z\u00C0-\u024F]/g,'');
+      if(refAuthor && itemAuthor && !itemAuthor.includes(refAuthor) && !refAuthor.includes(itemAuthor)){
+        flags.push({level:'err', msg:`Author mismatch: reference says "${ref.split(',')[0]}", Crossref says "${itemAuthorRaw}"`});
+      }
+
+      // Title similarity check
+      const refTitle = extractTitle(ref);
+      const itemTitle = item.title?.[0];
+      if(refTitle && itemTitle){
+        const overlap = wordOverlap(refTitle, itemTitle);
+        if(overlap < 0.35){
+          flags.push({level:'err', msg:`Title mismatch: "${refTitle}" — Crossref matched "${itemTitle}"`});
+        } else if(overlap < 0.65){
+          flags.push({level:'warn', msg:`Partial title match — verify manually: Crossref says "${itemTitle}"`});
+        }
+      }
+
+      return flags;
+    }
+
+    function showFlags(tr, flags){
+      if(!flags.length) return;
+      const matchTd = tr.querySelector('.match');
+      const div = document.createElement('div');
+      div.className = 'flags';
+      flags.forEach(f => {
+        const row = document.createElement('div');
+        row.className = 'flag ' + f.level;
+        const icon = document.createElement('em');
+        icon.className = 'flag-icon';
+        icon.textContent = f.level === 'err' ? '✗' : '⚠';
+        row.appendChild(icon);
+        row.appendChild(document.createTextNode(' ' + f.msg));
+        div.appendChild(row);
+      });
+      matchTd.appendChild(div);
+      if(flags.some(f => f.level === 'err')) tr.classList.add('row-flagged');
     }
 
     async function processOne(tr, ref){
@@ -227,10 +331,16 @@
         const summary = `${escapeHtml(title)}${journal? ' — <em>'+escapeHtml(journal)+'</em>':''}${year? ' ('+year+')':''}<br><span class="mono">DOI: ${escapeHtml(doi||'')}</span>`;
         setMatch(tr, summary);
         keepResult(ref, item);
+
+        // Validate reference and show flags
+        const flags = validateReference(ref, item);
+        showFlags(tr, flags);
+        const flagged = flags.some(f => f.level === 'err');
+
         if(item.URL) addLink(tr,'Publisher', item.URL);
         if(doi) addLink(tr,'DOI.org', 'https://doi.org/' + encodeURIComponent(doi));
 
-        if(!doi){ setStatus(tr, 'No DOI', 'warn'); return; }
+        if(!doi){ setStatus(tr, flagged ? 'Flagged' : 'No DOI', flagged ? 'err' : 'warn'); return; }
 
         setStatus(tr, 'Unpaywall…');
         let oaUrl = null;
@@ -240,8 +350,10 @@
           oaUrl = loc && (loc.url_for_pdf || loc.url);
         }catch(_e){ /* ignore */ }
 
-        if(oaUrl){ addLink(tr, 'OA PDF', oaUrl); setStatus(tr, 'Open‑access PDF', 'ok'); }
-        else { setStatus(tr, 'No OA PDF', 'warn'); }
+        if(oaUrl) addLink(tr, 'OA PDF', oaUrl);
+        if(flagged)      { setStatus(tr, 'Flagged', 'err'); }
+        else if(oaUrl)   { setStatus(tr, 'Open‑access PDF', 'ok'); }
+        else             { setStatus(tr, 'No OA PDF', 'warn'); }
       }catch(err){ setStatus(tr, 'Error', 'err'); keepResult(ref, null); }
     }
 
@@ -293,6 +405,19 @@
       }).join(' and ');
     }
 
+    function escapeBib(s){
+      // Escape characters special in BibTeX field values
+      return String(s)
+        .replace(/\\/g, '{\\textbackslash}')
+        .replace(/%/g, '\\%')
+        .replace(/#/g, '\\#')
+        .replace(/\$/g, '\\$')
+        .replace(/&/g, '\\&')
+        .replace(/_/g, '\\_')
+        .replace(/\^/g, '{\\textasciicircum}')
+        .replace(/~/g, '{\\textasciitilde}');
+    }
+
     function toBibTeX(item){
       if(!item) return null;
       const key = bibtexKeyFromItem(item);
@@ -308,15 +433,15 @@
 
       const lines = [
         `@article{${key},`,
-        authors? `  author = {${authors}},` : null,
-        title? `  title = {${title}},` : null,
-        journal? `  journal = {${journal}},` : null,
+        authors? `  author = {${escapeBib(authors)}},` : null,
+        title? `  title = {${escapeBib(title)}},` : null,
+        journal? `  journal = {${escapeBib(journal)}},` : null,
         year? `  year = {${year}},` : null,
-        volume? `  volume = {${volume}},` : null,
-        number? `  number = {${number}},` : null,
-        pages? `  pages = {${pages}},` : null,
-        doi? `  doi = {${doi}},` : null,
-        publisher? `  publisher = {${publisher}},` : null,
+        volume? `  volume = {${escapeBib(volume)}},` : null,
+        number? `  number = {${escapeBib(number)}},` : null,
+        pages? `  pages = {${escapeBib(pages)}},` : null,
+        doi? `  doi = {${escapeBib(doi)}},` : null,
+        publisher? `  publisher = {${escapeBib(publisher)}},` : null,
         `}`
       ].filter(Boolean);
       return lines.join('\n');
@@ -415,9 +540,7 @@
         await navigator.clipboard.writeText(text);
         alert('Copied to clipboard');
       }catch(_e){
-        qs('#bibtexOut').select();
-        document.execCommand('copy');
-        alert('Copied');
+        alert('Could not copy to clipboard. Please copy manually.');
       }
     });
   </script>
